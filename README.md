@@ -25,7 +25,7 @@ The sensor **Næste tømning** (next collection) shows the next day something is
 
 The names are the municipality's own, without container sizes and postal district: "240 L Dagrenovation" becomes "Dagrenovation". Two containers with the same kind of waste become one sensor. If a new kind shows up in the calendar, it gets a sensor straight away.
 
-The calendar is fetched four times a day, and the sensors move on at midnight. Some systems only give the next collection for each container (RenoWeb, Reno Djurs and Affald KBH), so there `dates` has only one date.
+The calendar is fetched four times a day, and the sensors move on at midnight. Some systems only give the next collection for each container (RenoWeb and Reno Djurs), so there `dates` has only one date.
 
 ## Municipalities
 
@@ -37,7 +37,7 @@ The calendar is fetched four times a day, and the sensors move on at midnight. S
 | RenoWeb | Aabenraa, Aalborg, Billund, Bornholm, Brøndby, Brønderslev, Dragør, Egedal, Esbjerg, Fredensborg, Gentofte, Glostrup, Hjørring, Jammerbugt, Kerteminde, Mariagerfjord, Randers, Rødovre, Samsø, Svendborg, Sønderborg, Varde, Vordingborg |
 | AffaldOnline | Assens, Faaborg-Midtfyn, Favrskov, Holbæk, Langeland, Morsø, Rebild, Vejle, Viborg, Ærø |
 | AffaldOnline, collection calendar as PDF | Fanø, Middelfart, Nyborg, Sorø |
-| AffaldOnline, dates only | Silkeborg |
+| AffaldOnline, next five weeks | Silkeborg |
 | OpenExperience | Fredericia, Holstebro, Lemvig, Nordfyns, Skive, Struer, Thisted |
 | Vestforbrænding | Furesø, Herlev, Ishøj, Vallensbæk |
 | Renomatic | Frederikshavn, Ikast-Brande, Vesthimmerlands |
@@ -51,7 +51,7 @@ The calendar is fetched four times a day, and the sensors move on at midnight. S
 | WasteWatch | Tønder |
 | Odense Renovation | Odense |
 
-Silkeborg's calendar only shows the days, not what is collected, so there it becomes one sensor, "Tømning". Herning gives the weekday and weeks for each container, and the dates are worked out from them; moves because of public holidays are not included.
+Silkeborg's calendar shows the next five weeks. Where it leaves out what is collected, the days become one sensor, "Tømning". Herning gives the weekday and weeks for each container, and the dates are worked out from them; moves because of public holidays are not included, since Herning only announces them on affald.herning.dk and by SMS. Affald KBH gives the next day for each kind of waste and how often it comes, and the days after it are worked out from that; there the first date is the kommune's own and includes any move, the later ones do not.
 
 In Kolding the containers belong to the building's address. If you choose a flat, the integration fetches the dates from the building's address. If the flat is not linked to any container in Kolding's system, it gets no sensors; in that case choose the building's address without a floor.
 

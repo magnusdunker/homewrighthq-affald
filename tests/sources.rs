@@ -102,6 +102,15 @@ fn html_systems() {
         sources::parse_affaldonline_web(silkeborg, d("2030-10-20")),
         vec![p("2030-10-22", "Tømning"), p("2030-10-29", "Restaffald"), p("2030-10-29", "Madaffald")]
     );
+    // Silkeborg since October 2026: icons and names in a table in the cell
+    let silkeborg = r#"<table><tr><td colspan="2"><strong>OKTOBER</strong></td></tr>
+        <tr><td>26-10</td><td><table><tr><td><img src="img/icons/MADAFFALD.jpg" alt="Madaffald"><img src="img/icons/PLAST.jpg" alt="Plast"></td>
+          <td>Mad-/Rest, Plast/MDK/Glas/Metal/Papir/Pap</td></tr></table></td></tr>
+        <tr><td>29-10</td><td><table><tr><td></td><td></td></tr></table></td></tr></table>"#;
+    assert_eq!(
+        sources::parse_affaldonline_web(silkeborg, d("2030-10-20")),
+        vec![p("2030-10-26", "Mad-/Rest"), p("2030-10-26", "Plast/MDK/Glas/Metal/Papir/Pap"), p("2030-10-29", "Tømning")]
+    );
 
     let kk = r#"<h2>Næste tømning</h2>
         <div class="calendar-waste-date"><div class="date">Tirsdag,  22. oktober 2030
@@ -109,7 +118,25 @@ fn html_systems() {
           <div class="waste-fraction"><article><h3> Restaffald </h3></article></div></div></div>
         <div class="calendar-waste-date"><div class="date">Onsdag,  23. oktober 2030
           <div class="waste-fraction"><article><h3>Pap</h3></article></div></div></div>"#;
-    assert_eq!(sources::parse_copenhagen(kk), vec![p("2030-10-22", "Madaffald"), p("2030-10-22", "Restaffald"), p("2030-10-23", "Pap")]);
+    assert_eq!(sources::parse_copenhagen(kk, d("2030-10-20")), vec![p("2030-10-22", "Madaffald"), p("2030-10-22", "Restaffald"), p("2030-10-23", "Pap")]);
+
+    // the frequency gives the days after the next one, for four months
+    let kk = r#"<div class="calendar-waste-date"><div class="date">Tirsdag,  22. oktober 2030
+          <div class="waste-fraction" data-frequency="1 gang pr. uge (Tirsdag)"><article><h3>Madaffald</h3></article></div></div></div>
+        <div class="calendar-waste-date"><div class="date">Mandag,  28. oktober 2030
+          <div class="waste-fraction" data-frequency="Hver 2. uge (Mandag lige uge)"><article><h3>Pap</h3></article></div>
+          <div class="waste-fraction" data-frequency="Hver 4. uge (Hver 4. uge mandag)"><article><h3>Metal</h3></article></div>
+          <div class="waste-fraction" data-frequency="Efter aftale"><article><h3>Glas</h3></article></div></div></div>
+        <div class="calendar-waste-date"><div class="date">Onsdag,  30. oktober 2030
+          <div class="waste-fraction" data-frequency="2 gange pr. uge (Onsdag og fredag)"><article><h3>Rest</h3></article></div></div></div>"#;
+    let kk = sources::parse_copenhagen(kk, d("2030-10-20"));
+    let dates = |f: &str| kk.iter().filter(|x| x.fraction == f).map(|x| x.date).collect::<Vec<_>>();
+    assert_eq!(dates("Madaffald")[..3], [d("2030-10-22"), d("2030-10-29"), d("2030-11-05")]);
+    assert_eq!(dates("Madaffald").last(), Some(&d("2031-02-11")));
+    assert_eq!(dates("Pap")[..3], [d("2030-10-28"), d("2030-11-11"), d("2030-11-25")]);
+    assert_eq!(dates("Metal")[..3], [d("2030-10-28"), d("2030-11-25"), d("2030-12-23")]);
+    assert_eq!(dates("Glas"), [d("2030-10-28")]);
+    assert_eq!(dates("Rest")[..4], [d("2030-10-30"), d("2030-11-01"), d("2030-11-06"), d("2030-11-08")]);
 }
 
 /// A calendar the way affaldonline.dk draws it: a month header, day rows
@@ -241,4 +268,26 @@ async fn renosyd_goes_from_address_to_stand() {
     let c = Client::new(Some(&server.uri()));
     let got = c.pickups(kommuner::find("Odder").unwrap(), "husnummer:h1").await.unwrap();
     assert_eq!(got, vec![p("2030-10-19", "Glas, Metal")]);
+}
+
+/// Silkeborg's search answers with whole addresses; the house number then
+/// picks among them.
+#[tokio::test(flavor = "multi_thread")]
+async fn silkeborg_finds_whole_addresses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/kalender/silkeborg/acCal.php"))
+        .and(query_param("term", "Søvej 1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "value": "Søvej 1 (8600 Silkeborg)", "values": "Søvej|1||||8600|Silkeborg|71342344|132089|0" },
+            { "value": "Søvej 1 B (8654 Bryrup)", "values": "Søvej|1|B|||8654|Bryrup|71360452|1516763|0" },
+            { "value": "Søvej 10 (8600 Silkeborg)", "values": "Søvej|10||||8600|Silkeborg|1|2|0" },
+        ])))
+        .mount(&server)
+        .await;
+    let c = Client::new(Some(&server.uri()));
+    let found = c.search(kommuner::find("Silkeborg").unwrap(), "Søvej 1", None).await.unwrap();
+    let names: Vec<_> = found.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(names, ["Søvej 1, 8600 Silkeborg", "Søvej 1 B, 8654 Bryrup"]);
+    assert_eq!(found[0].id, "Søvej|1||||8600|Silkeborg|71342344|132089|0");
 }

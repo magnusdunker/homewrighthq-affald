@@ -114,6 +114,14 @@ fn starts_with_address(name: &str, street: &str, number: &str) -> bool {
     }
 }
 
+/// "Søvej 1 (8600 Silkeborg)" as "Søvej 1, 8600 Silkeborg".
+fn affaldonline_name(s: &str) -> String {
+    match s.trim().strip_suffix(')').and_then(|s| s.rsplit_once(" (")) {
+        Some((address, town)) => format!("{address}, {town}"),
+        None => s.trim().to_string(),
+    }
+}
+
 /// The rows of the first table under `table_sel` as header -> cell text.
 fn table_rows(doc: &Html, table_sel: &str) -> Vec<Vec<(String, String)>> {
     let Some(table) = doc.select(&sel(table_sel)).next() else { return vec![] };
@@ -376,7 +384,19 @@ impl Client {
 
     pub(crate) async fn affaldonline_web_search(&self, slug: &str, query: &str) -> Result<Vec<Address>, ApiError> {
         let (street, number) = split_address(query);
-        let streets = self.json(self.http.get(self.url(AFFALDONLINE_WEB, &format!("{slug}/acCal.php"))).query(&[("term", street.as_str())])).await?;
+        let ac = self.url(AFFALDONLINE_WEB, &format!("{slug}/acCal.php"));
+        // Silkeborg's search answers with whole addresses, "values" being the id
+        let found = self.json(self.http.get(&ac).query(&[("term", query.trim())])).await?;
+        let found = found.as_array().map(Vec::as_slice).unwrap_or_default();
+        if found.iter().any(|a| a.get("values").is_some()) {
+            return Ok(found
+                .iter()
+                .filter_map(|a| Some(Address { id: str_of(&a["values"])?, name: affaldonline_name(&str_of(&a["value"])?) }))
+                .filter(|a| starts_with_address(&a.name, &street, &number))
+                .collect());
+        }
+        // the others answer with streets, and the house numbers come separately
+        let streets = self.json(self.http.get(&ac).query(&[("term", street.as_str())])).await?;
         let mut out = vec![];
         for s in streets.as_array().into_iter().flatten().take(10) {
             let (Some(vej), Some(postnr)) = (str_of(&s["vejnavn"]), id_of(&s["postnr"])) else { continue };
@@ -447,7 +467,7 @@ impl Client {
 
     pub(crate) async fn copenhagen_pickups(&self, id: &str) -> Result<Vec<Pickup>, ApiError> {
         let html = self.text(self.http.get(self.url(KK, "din-kalender")).query(&[("address_id", id)])).await?;
-        Ok(parse_copenhagen(&html))
+        Ok(parse_copenhagen(&html, today()))
     }
 }
 
@@ -627,13 +647,14 @@ pub fn parse_renomatic(html: &str, today: NaiveDate) -> Vec<Pickup> {
     out
 }
 
-/// A table of "dd-mm" and what is picked up. Silkeborg leaves the second
-/// column empty, so those days are just "Tømning".
+/// A table of "dd-mm" and what is picked up. Silkeborg puts the names in a
+/// table of their own beside the icons; where it leaves them out, those
+/// days are just "Tømning".
 pub fn parse_affaldonline_web(html: &str, today: NaiveDate) -> Vec<Pickup> {
     let doc = Html::parse_document(html);
     let mut out = vec![];
     for tr in doc.select(&sel("tr")) {
-        let cells: Vec<String> = tr.select(&sel("td")).map(text_of).collect();
+        let cells: Vec<String> = tr.children().filter_map(ElementRef::wrap).filter(|e| e.value().name() == "td").map(text_of).collect();
         if cells.len() != 2 {
             continue;
         }
@@ -649,19 +670,59 @@ pub fn parse_affaldonline_web(html: &str, today: NaiveDate) -> Vec<Pickup> {
 }
 
 /// Day blocks "Tirsdag, 20. oktober 2026" with the fractions as headings.
-pub fn parse_copenhagen(html: &str) -> Vec<Pickup> {
+/// Only the next day is given for each fraction, with how often it comes:
+/// "1 gang pr. uge (Tirsdag)", "Hver 2. uge (Mandag lige uge)". The days
+/// after it are worked out from that for the next four months.
+pub fn parse_copenhagen(html: &str, today: NaiveDate) -> Vec<Pickup> {
     let doc = Html::parse_document(html);
     let mut out = vec![];
+    let mut seen = HashSet::new();
     for block in doc.select(&sel("div.calendar-waste-date")) {
         let Some(date_div) = block.select(&sel("div.date")).next() else { continue };
         let first: String = date_div.text().map(str::trim).find(|t| !t.is_empty()).unwrap_or_default().to_string();
         let Some(d) = danish_date(&first) else { continue };
-        for h in block.select(&sel("h3")) {
-            let name = text_of(h);
-            if !name.is_empty() {
-                out.push(Pickup { date: d, fraction: name });
+        for fraction in block.select(&sel("div.waste-fraction")) {
+            let Some(name) = fraction.select(&sel("h3")).next().map(text_of).filter(|n| !n.is_empty()) else { continue };
+            let freq = fraction.value().attr("data-frequency").unwrap_or_default();
+            for day in kk_repeat(d, freq, today + Days::new(120)) {
+                if seen.insert((day, name.clone())) {
+                    out.push(Pickup { date: day, fraction: name.clone() });
+                }
             }
         }
     }
+    out
+}
+
+/// `next` and the days after it up to `until`, by Affald KBH's frequency.
+/// One that is not "pr. uge" or "Hver N. uge" gives only `next`.
+fn kk_repeat(next: NaiveDate, freq: &str, until: NaiveDate) -> Vec<NaiveDate> {
+    let f = freq.to_lowercase();
+    let weeks: Option<u64> = match f.strip_prefix("hver ") {
+        Some(rest) => rest.split_once(". uge").and_then(|(n, _)| n.trim().parse().ok()),
+        None if f.contains(" pr. uge") => Some(1),
+        None => None,
+    };
+    let mut out = vec![next];
+    let Some(weeks) = weeks.filter(|w| *w > 0) else { return out };
+    // "2 gange pr. uge (Mandag og torsdag)": each named day on its own
+    let mut days: Vec<Weekday> = f.split(|c: char| !c.is_alphabetic()).filter_map(weekday).collect();
+    days.dedup();
+    if days.is_empty() {
+        days.push(next.weekday());
+    }
+    for day in days {
+        // the named day nearest to the given one, which may itself be moved
+        let ahead = (day.num_days_from_monday() + 7 - next.weekday().num_days_from_monday()) % 7;
+        let mut d = if ahead > 3 { next - Days::new(7 - ahead as u64) } else { next + Days::new(ahead as u64) };
+        while d <= until {
+            if d > next {
+                out.push(d);
+            }
+            d = d + Days::new(7 * weeks);
+        }
+    }
+    out.sort();
+    out.dedup();
     out
 }
